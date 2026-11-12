@@ -1,0 +1,16 @@
+{
+  "id": "import_1794477958295_ssx2dh",
+  "createdAt": "2026-11-12T10:05:58.295Z",
+  "updatedAt": "2026-11-12T10:05:58.354Z",
+  "logs": [],
+  "files": [
+    {
+      "fileName": "final-test.txt",
+      "status": "SUCCESS",
+      "detectedName": "Final Test Movie",
+      "matchStatus": "NEW",
+      "startedAt": "2026-11-12T10:05:58.296Z",
+      "finishedAt": "2026-11-12T10:05:58.353Z"
+    }
+  ]
+}

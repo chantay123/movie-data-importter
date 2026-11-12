@@ -1,0 +1,46 @@
+{
+  "id": "v1234",
+  "name": "Bác Sĩ X",
+  "slug": "bac-si-x",
+  "originName": "The Doctor X",
+  "content": "Nội dung phim mới nhất.",
+  "actors": [{ "name": "Nguyễn Văn A" }, { "name": "Trần Thị B" }],
+  "info": {
+    "directors": "Nguyễn Đình D",
+    "year": 2024,
+    "status": "Hoàn thành",
+    "time": "45 phút/tập",
+    "episodeCurrent": 12,
+    "episodeTotal": 12,
+    "quality": "HD",
+    "view": 150000,
+    "trailerUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "thumbUrl": "https://example.com/thumb.jpg",
+    "posterUrl": "https://example.com/poster.jpg",
+    "categories": ["Phim Hành Động"],
+    "countries": ["Việt Nam"],
+    "languages": ["Vietsub"],
+    "tmdb": { "id": 12345, "type": "movie" }
+  },
+  "sources": [
+    {
+      "server_name": "Vietsub #1",
+      "server_data": [
+        {
+          "name": "1",
+          "slug": "tap-1",
+          "filename": "tap-1",
+          "link_embed": "https://example.com/embed/episode-1",
+          "link_m3u8": ""
+        },
+        {
+          "name": "2",
+          "slug": "tap-2",
+          "filename": "tap-2",
+          "link_embed": "https://example.com/embed/episode-2",
+          "link_m3u8": ""
+        }
+      ]
+    }
+  ]
+}

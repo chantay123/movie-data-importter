@@ -1,0 +1,31 @@
+{
+  "id": "v5678",
+  "name": "Hành Trình Của Gió",
+  "slug": "hanh-trinh-cua-gio",
+  "originName": "Journey of the Wind",
+  "content": "Mô tả phim về hành trình đi qua vùng đất hoang vu.",
+  "actors": [{ "name": "Lê Minh C" }],
+  "info": {
+    "directors": "Phạm Thị E",
+    "year": 2023,
+    "status": "Đang chiếu",
+    "episodeCurrent": 8,
+    "episodeTotal": 8,
+    "categories": ["Phim Tình Cảm"],
+    "countries": ["Việt Nam"]
+  },
+  "sources": [
+    {
+      "server_name": "Vietsub #2",
+      "server_data": [
+        {
+          "name": "1",
+          "slug": "tap-1",
+          "filename": "tap-1",
+          "link_embed": "https://example.com/embed/journey-1",
+          "link_m3u8": ""
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "import_1794478837033_02l9ml",
+  "createdAt": "2026-11-12T10:20:37.033Z",
+  "updatedAt": "2026-11-12T10:20:37.035Z",
+  "logs": [],
+  "files": [
+    {
+      "fileName": "doctorX.txt",
+      "status": "FAILED",
+      "error": "The file does not contain a valid JSON payload",
+      "startedAt": "2026-11-12T10:20:37.034Z",
+      "finishedAt": "2026-11-12T10:20:37.035Z"
+    }
+  ]
+}

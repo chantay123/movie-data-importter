@@ -1,0 +1,2 @@
+Đây là file không hợp lệ, không chứa JSON.
+{ "name": "Không có dấu ngoặc đóng"

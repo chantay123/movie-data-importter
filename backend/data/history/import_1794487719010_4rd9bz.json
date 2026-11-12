@@ -1,0 +1,16 @@
+{
+  "id": "import_1794487719010_4rd9bz",
+  "createdAt": "2026-11-12T12:48:39.010Z",
+  "updatedAt": "2026-11-12T12:48:39.177Z",
+  "logs": [],
+  "files": [
+    {
+      "fileName": "doctorX.txt",
+      "status": "SUCCESS",
+      "detectedName": "Bác Sĩ X",
+      "matchStatus": "NEW",
+      "startedAt": "2026-11-12T12:48:39.012Z",
+      "finishedAt": "2026-11-12T12:48:39.177Z"
+    }
+  ]
+}

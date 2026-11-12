@@ -1,0 +1,16 @@
+{
+  "id": "import_1794482127605_5ryl2s",
+  "createdAt": "2026-11-12T11:15:27.605Z",
+  "updatedAt": "2026-11-12T11:15:27.649Z",
+  "logs": [],
+  "files": [
+    {
+      "fileName": "doctorX.txt",
+      "status": "SUCCESS",
+      "detectedName": "Bác Sĩ X",
+      "matchStatus": "NEW",
+      "startedAt": "2026-11-12T11:15:27.607Z",
+      "finishedAt": "2026-11-12T11:15:27.649Z"
+    }
+  ]
+}

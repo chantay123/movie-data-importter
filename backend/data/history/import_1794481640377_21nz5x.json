@@ -1,0 +1,16 @@
+{
+  "id": "import_1794481640377_21nz5x",
+  "createdAt": "2026-11-12T11:07:20.377Z",
+  "updatedAt": "2026-11-12T11:07:20.389Z",
+  "logs": [],
+  "files": [
+    {
+      "fileName": "doctorX.txt",
+      "status": "FAILED",
+      "detectedName": "Bác Sĩ X",
+      "error": "Parsing failed",
+      "startedAt": "2026-11-12T11:07:20.379Z",
+      "finishedAt": "2026-11-12T11:07:20.389Z"
+    }
+  ]
+}
