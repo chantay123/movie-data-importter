@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { appConfig, hasDatabaseConfig } from '../config/app.config';
 import { getDatabaseStatus } from '../database/mongo-client';
-import { FieldStatus, ImportStatus, MatchStatus } from '../constants/importStatus';
+import { FieldStatus, ImportStatus, MatchStatus, SkipReason } from '../constants/importStatus';
 import { requireAdmin } from '../middleware/adminAuth';
 import {
   addLog,
@@ -20,6 +20,7 @@ import {
   updateFile,
 } from '../services/importJob.service';
 import { buildLogEntry, importMovie } from '../services/movieImport.service';
+import { resolveAmbiguousTarget } from '../services/movieDiff.service';
 
 /**
  * HTTP API of the importer.
@@ -46,6 +47,13 @@ interface ConfirmBody {
  */
 interface UploadedFile {
   name: string;
+  /**
+   * Path of the file relative to the uploaded folder.
+   *
+   * It identifies the file inside the job: two files of different sub-folders
+   * can share the same name.
+   */
+  path: string;
   size: number;
   content: string;
 }
@@ -178,7 +186,7 @@ importRouter.get('/jobs/:jobId/export', requireAdmin, (req: Request, res: Respon
  */
 importRouter.post('/jobs', requireAdmin, (req: Request, res: Response) => {
   const body = req.body as {
-    files?: Array<{ name?: string; size?: number; content?: string }>;
+    files?: Array<{ name?: string; path?: string; size?: number; content?: string }>;
   };
 
   const files = Array.isArray(body.files) ? body.files : [];
@@ -189,6 +197,7 @@ importRouter.post('/jobs', requireAdmin, (req: Request, res: Response) => {
   }
 
   const accepted: UploadedFile[] = [];
+  const seenPaths = new Set<string>();
 
   for (const file of files) {
     const name = typeof file.name === 'string' ? file.name.trim() : '';
@@ -204,7 +213,18 @@ importRouter.post('/jobs', requireAdmin, (req: Request, res: Response) => {
       continue;
     }
 
-    accepted.push({ name, size, content });
+    // The relative path is the identity of a file inside a folder. It is
+    // optional for the clients that only send a flat list of files.
+    const path = typeof file.path === 'string' && file.path.trim().length > 0
+      ? file.path.trim()
+      : name;
+
+    if (seenPaths.has(path)) {
+      continue;
+    }
+
+    seenPaths.add(path);
+    accepted.push({ name, path, size, content });
   }
 
   if (accepted.length === 0) {
@@ -212,12 +232,13 @@ importRouter.post('/jobs', requireAdmin, (req: Request, res: Response) => {
     return;
   }
 
-  const sizes = new Map<string, number>(accepted.map((file) => [file.name, file.size]));
-  const contents = new Map<string, string>(accepted.map((file) => [file.name, file.content]));
   const job = createJob(
-    accepted.map((file) => file.name),
-    sizes,
-    contents,
+    accepted.map((file) => ({
+      path: file.path,
+      name: file.name,
+      size: file.size,
+      content: file.content,
+    })),
   );
 
   res.status(202).json({ success: true, jobId: job.id, total: accepted.length });
@@ -237,7 +258,7 @@ async function runJob(jobId: string, files: UploadedFile[]): Promise<void> {
     return;
   }
 
-  const byName = new Map(files.map((file) => [file.name, file.content]));
+  const byPath = new Map(files.map((file) => [file.path, file.content]));
   const queue = [...job.files];
   const concurrency = Math.max(1, appConfig.maxConcurrency);
 
@@ -252,7 +273,7 @@ async function runJob(jobId: string, files: UploadedFile[]): Promise<void> {
         return;
       }
 
-      const content = byName.get(next.fileName) ?? '';
+      const content = byPath.get(next.filePath ?? next.fileName) ?? '';
       await processFile(jobId, next.id, content);
     }
   };
@@ -288,7 +309,7 @@ importRouter.post('/jobs/:jobId/files/:fileId/retry', requireAdmin, async (req: 
   const content =
     typeof body.content === 'string' && body.content.trim().length > 0
       ? body.content
-      : (getFileContent(jobId, file.fileName) ?? '');
+      : (getFileContent(jobId, file.filePath ?? file.fileName) ?? '');
 
   if (content.trim().length === 0) {
     res.status(400).json({
@@ -298,7 +319,14 @@ importRouter.post('/jobs/:jobId/files/:fileId/retry', requireAdmin, async (req: 
     return;
   }
 
-  updateFile(jobId, fileId, { status: ImportStatus.WAITING, error: undefined });
+  updateFile(jobId, fileId, {
+    status: ImportStatus.WAITING,
+    error: undefined,
+    imported: false,
+    skipReason: undefined,
+    alreadyExists: undefined,
+    changedFields: undefined,
+  });
 
   res.status(202).json({ success: true, message: 'The file is being retried' });
 
@@ -338,14 +366,49 @@ importRouter.post('/jobs/:jobId/files/:fileId/import', requireAdmin, async (req:
     return;
   }
 
+  const dryRun = body.dryRun !== false;
+
+  // The target of an ambiguous match is chosen by the user: the comparison is
+  // rebuilt against it so that only the fields that really differ are written.
+  const targetComparison = resolveAmbiguousTarget(
+    fileId,
+    parsed.mapped,
+    comparison,
+    body.targetMovieId,
+  );
+
+  const target =
+    targetComparison.existing ??
+    comparison.candidates.find((candidate) => candidate._id === body.targetMovieId);
+
+  // The movie already exists and the file brings nothing new: there is
+  // nothing to write. The file is marked as "already there" and skipped.
+  if (targetComparison.existing && !targetComparison.hasChanges) {
+    updateFile(jobId, fileId, {
+      status: ImportStatus.SKIPPED,
+      skipReason: SkipReason.ALREADY_EXISTS,
+      alreadyExists: true,
+      changedFields: [],
+      imported: false,
+      error: undefined,
+    });
+
+    res.json({
+      success: true,
+      skipped: true,
+      message:
+        'The movie already exists in MongoDB and the file brings no change: the import was skipped',
+    });
+    return;
+  }
+
   const selectedFields = Array.isArray(body.selectedFields)
     ? body.selectedFields
-    : comparison.updatableFields;
-  const dryRun = body.dryRun !== false;
+    : targetComparison.updatableFields;
 
   // A brand new document must carry the fields required by the `Movie` schema,
   // otherwise the write would fail with an obscure validation error.
-  if (!comparison.existing && selectedFields.length === 0) {
+  if (!target && selectedFields.length === 0) {
     res.status(400).json({
       success: false,
       message:
@@ -357,17 +420,13 @@ importRouter.post('/jobs/:jobId/files/:fileId/import', requireAdmin, async (req:
   updateFile(jobId, fileId, { status: ImportStatus.PROCESSING, error: undefined });
 
   try {
-    const existing =
-      comparison.existing ??
-      comparison.candidates.find((candidate) => candidate._id === body.targetMovieId);
-
-    const outcome = await importMovie(fileId, file.fileName, parsed.mapped, parsed.raw, existing, {
+    const outcome = await importMovie(fileId, file.fileName, parsed.mapped, parsed.raw, target, {
       selectedFields,
       dryRun,
       targetMovieId: body.targetMovieId,
     });
 
-    const log = buildLogEntry(fileId, file.fileName, parsed.mapped, outcome);
+    const log = buildLogEntry(fileId, file.fileName, parsed.mapped, outcome, dryRun);
     addLog(jobId, log);
 
     if (outcome.error) {
@@ -376,9 +435,23 @@ importRouter.post('/jobs/:jobId/files/:fileId/import', requireAdmin, async (req:
       return;
     }
 
+    if (dryRun) {
+      // Nothing was written: the file stays in the `PARSED` state so the
+      // panel never reports a movie as imported when it was not.
+      updateFile(jobId, fileId, {
+        status: ImportStatus.PARSED,
+        imported: false,
+        error: undefined,
+      });
+
+      res.json({ success: true, dryRun, log, outcome });
+      return;
+    }
+
     updateFile(jobId, fileId, {
       status: ImportStatus.SUCCESS,
       existingMovieId: outcome.movieId ?? file.existingMovieId,
+      imported: true,
     });
 
     res.json({ success: true, dryRun, log, outcome });

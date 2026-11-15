@@ -58,6 +58,21 @@ export function DatabaseComparison(props: DatabaseComparisonProps): JSX.Element 
         </div>
       ) : null}
 
+      {comparison.matchStatus === MatchStatus.MATCHED && comparison.hasChanges === false ? (
+        <div className="alert alert--info">
+          Phim đã tồn tại trong database và file không mang thay đổi nào mới. Hệ thống đánh dấu
+          &ldquo;đã có&rdquo; và bỏ qua — không có gì được ghi vào MongoDB.
+        </div>
+      ) : null}
+
+      {comparison.matchStatus === MatchStatus.MATCHED && comparison.hasChanges === true ? (
+        <div className="alert alert--warning">
+          Phim đã tồn tại trong database và có{' '}
+          <strong>{comparison.changedFields.length}</strong> trường thay đổi:{' '}
+          {comparison.changedFields.join(', ')}. Xác nhận import sẽ cập nhật các trường này.
+        </div>
+      ) : null}
+
       {comparison.candidates.length > 0 ? (
         <div className="table-wrap">
           <table>

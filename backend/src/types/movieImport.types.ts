@@ -5,6 +5,7 @@ import type {
   FieldStatus,
   MergeStrategy,
   ProcessingStage,
+  SkipReason,
 } from '../constants/importStatus';
 import type { ExtractedMovieData } from './extraction.types';
 
@@ -357,6 +358,33 @@ export interface ExistingMovie {
   trailer?: MappedTrailer;
   /** Language label. */
   lang?: string;
+  /**
+   * Genres of the movie.
+   *
+   * They are not stored on the `Movie` document: they live in the junction
+   * collection `moviecategories`.
+   */
+  categories?: Array<{ name: string; slug: string }>;
+  /**
+   * Countries of the movie.
+   *
+   * They are not stored on the `Movie` document: they live in the junction
+   * collection `moviecountries`.
+   */
+  countries?: Array<{ name: string; slug: string }>;
+  /** Format group of the movie, stored in the `Format` master data. */
+  quality?: string;
+  /** Release year of the movie, stored in the `Year` master data. */
+  year?: number;
+  /**
+   * Whether the normalized relations could be read from the junction
+   * collections.
+   *
+   * When the relations cannot be loaded (missing junction collection, read
+   * error, ...), the importer must not report a change for them: the incoming
+   * values would then overwrite relations that were never compared.
+   */
+  relationsLoaded?: boolean;
   /** Last modification timestamp, used for the optimistic concurrency check. */
   updatedAt?: string;
 }
@@ -403,7 +431,7 @@ export interface FieldDiff {
 export interface MovieComparison {
   /** Identifier of the file the comparison belongs to. */
   fileId: string;
-  /** Outcome of the database lookup. */
+  /** Outcome of the database lookup for one parsed movie. */
   matchStatus: MatchStatus;
   /** Criterion that produced the match. */
   matchedBy?: MatchResult['matchedBy'];
@@ -415,6 +443,19 @@ export interface MovieComparison {
   diffs: FieldDiff[];
   /** Fields that are safe to write. */
   updatableFields: string[];
+  /**
+   * Whether the incoming file brings at least one change compared to the
+   * document stored in MongoDB.
+   *
+   * When the movie already exists and this flag is `false`, the file carries
+   * no new information: the importer marks it as "already there" and skips it.
+   */
+  hasChanges: boolean;
+  /**
+   * Names of the fields that actually differ between the database document
+   * and the incoming file.
+   */
+  changedFields: string[];
 }
 
 /**
@@ -423,8 +464,14 @@ export interface MovieComparison {
 export interface FileProgress {
   /** Stable identifier of the file inside the job. */
   id: string;
-  /** Name of the file. */
+  /** Name of the file, without its folder. */
   fileName: string;
+  /**
+   * Path of the file relative to the uploaded folder.
+   *
+   * It is the only reliable identifier of a file inside a folder.
+   */
+  filePath?: string;
   /** Size of the file in bytes. */
   fileSize: number;
   /** Current status. */
@@ -447,12 +494,38 @@ export interface FileProgress {
   matchStatus?: MatchStatus;
   /** Identifier of the matched document. */
   existingMovieId?: string;
+  /**
+   * Whether the movie was actually written into MongoDB.
+   *
+   * `false` means the file was only parsed and compared: the user still has
+   * to confirm the import.
+   */
+  imported?: boolean;
   /** Timestamp of the beginning of the processing. */
   startedAt?: string;
   /** Timestamp of the end of the processing. */
   finishedAt?: string;
   /** Error message when the file failed. */
   error?: string;
+  /**
+   * Reason why the file was skipped.
+   *
+   * It is only set when the status is `SKIPPED`.
+   */
+  skipReason?: SkipReason;
+  /**
+   * Whether the movie already existed in MongoDB.
+   *
+   * When it is `true` and the file brings no change, the file is skipped.
+   */
+  alreadyExists?: boolean;
+  /**
+   * Names of the fields that differ between the database and the file.
+   *
+   * An empty list on an existing movie means the file brings no new
+   * information.
+   */
+  changedFields?: string[];
   /** Parsed payload, available for preview. */
   parsed?: ParsedMovie;
 }
@@ -477,8 +550,15 @@ export interface JobCounters {
   cancelled: number;
   /** Files currently being processed. */
   processing: number;
+  /** Files that were parsed and compared, but not written yet. */
+  parsed: number;
   /** Files that were imported into MongoDB. */
   imported: number;
+  /**
+   * Files that were skipped because the movie already exists in MongoDB and
+   * the file brings no change.
+   */
+  unchanged: number;
   /** Overall completion percentage between 0 and 100. */
   overallProgress: number;
 }
@@ -503,6 +583,13 @@ export interface ImportLogEntry {
   updatedFields: string[];
   /** Outcome of the write. */
   status: ImportStatus;
+  /** Whether the document was actually written into MongoDB. */
+  imported?: boolean;
+  /**
+   * Whether the file was skipped because the movie already existed and the
+   * file brought no change.
+   */
+  skipped?: boolean;
   /** Error message when the write failed. */
   error?: string;
   /** Timestamp of the write. */

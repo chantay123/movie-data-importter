@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { appConfig } from '../config/app.config';
 import {
+  ImportOperation,
   ImportStatus,
   MatchStatus,
   ProcessingStage,
+  SkipReason,
 } from '../constants/importStatus';
 import type {
   FileProgress,
@@ -33,6 +35,14 @@ interface JobState {
   cancelled: boolean;
   /** Raw content of every uploaded file, kept so a file can be retried alone. */
   contents: Map<string, string>;
+  /**
+   * Identity of the movie targeted by every processed file, indexed by the
+   * identity key.
+   *
+   * It is used to detect two files of the same batch that target the same
+   * movie: the second one is skipped instead of being applied twice.
+   */
+  claims: Map<string, string>;
 }
 
 /**
@@ -71,7 +81,9 @@ export function recountJob(job: ImportJob): JobCounters {
     skipped: 0,
     cancelled: 0,
     processing: 0,
+    parsed: 0,
     imported: 0,
+    unchanged: 0,
     overallProgress: 0,
   };
 
@@ -82,12 +94,21 @@ export function recountJob(job: ImportJob): JobCounters {
     } else if (file.status === ImportStatus.FAILED) {
       counters.failed += 1;
       counters.processed += 1;
+    } else if (file.status === ImportStatus.PARSED) {
+      counters.parsed += 1;
+      counters.processed += 1;
     } else if (file.status === ImportStatus.NEEDS_REVIEW) {
       counters.needsReview += 1;
       counters.processed += 1;
     } else if (file.status === ImportStatus.SKIPPED) {
       counters.skipped += 1;
       counters.processed += 1;
+
+      // A file skipped because the movie already exists and brings no change
+      // is counted separately: it is not an error, it is a duplicate.
+      if (file.skipReason === SkipReason.ALREADY_EXISTS) {
+        counters.unchanged += 1;
+      }
     } else if (file.status === ImportStatus.CANCELLED) {
       counters.cancelled += 1;
       counters.processed += 1;
@@ -96,7 +117,9 @@ export function recountJob(job: ImportJob): JobCounters {
     }
   }
 
-  counters.imported = logs.filter((log) => log.status === ImportStatus.SUCCESS).length;
+  // Only the writes that actually reached MongoDB are counted: a dry run
+  // produces a log entry too, but nothing was written.
+  counters.imported = logs.filter((log) => log.imported === true).length;
 
   if (counters.total > 0) {
     counters.overallProgress = Math.round((counters.processed / counters.total) * 100);
@@ -148,25 +171,39 @@ export function updateFile(
 }
 
 /**
+ * Description of a file that belongs to a job.
+ */
+export interface JobFileInput {
+  /**
+   * Identifier of the file inside the job.
+   *
+   * It is the path relative to the uploaded folder: two files living in
+   * different sub-folders can share the same name.
+   */
+  path: string;
+  /** Name of the file, without its folder. */
+  name: string;
+  /** Size of the file in bytes. */
+  size: number;
+  /** Raw content of the file. */
+  content?: string;
+}
+
+/**
  * Creates a new import job.
  *
- * @param fileNames - Names of the files to process.
- * @param fileSizes - Sizes of the files, indexed by file name.
- * @param contents - Raw content of the files, indexed by file name.
+ * @param files - Description of every file to process.
  * @returns The created job.
  */
-export function createJob(
-  fileNames: string[],
-  fileSizes: Map<string, number>,
-  contents?: Map<string, string>,
-): ImportJob {
+export function createJob(files: JobFileInput[]): ImportJob {
   const id = `import_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const now = new Date().toISOString();
 
-  const files: FileProgress[] = fileNames.map((fileName) => ({
+  const fileProgress: FileProgress[] = files.map((file) => ({
     id: `file_${++fileSequence}`,
-    fileName,
-    fileSize: fileSizes.get(fileName) ?? 0,
+    fileName: file.name,
+    filePath: file.path,
+    fileSize: file.size,
     status: ImportStatus.WAITING,
     stage: ProcessingStage.READING,
     progress: 0,
@@ -180,7 +217,7 @@ export function createJob(
     updatedAt: now,
     cancelled: false,
     counters: {
-      total: files.length,
+      total: fileProgress.length,
       processed: 0,
       success: 0,
       failed: 0,
@@ -188,16 +225,26 @@ export function createJob(
       skipped: 0,
       cancelled: 0,
       processing: 0,
+      parsed: 0,
       imported: 0,
+      unchanged: 0,
       overallProgress: 0,
     },
-    files,
+    files: fileProgress,
     logs: [],
   };
 
   job.counters = recountJob(job);
 
-  jobs.set(id, { job, comparisons: new Map(), cancelled: false, contents: contents ?? new Map() });
+  const contents = new Map<string, string>();
+
+  for (const file of files) {
+    if (file.content !== undefined) {
+      contents.set(file.path, file.content);
+    }
+  }
+
+  jobs.set(id, { job, comparisons: new Map(), cancelled: false, contents, claims: new Map() });
 
   emit({ type: 'job:created', job });
 
@@ -243,8 +290,8 @@ export function getComparisons(jobId: string): MovieComparison[] {
  * @param fileName - Name of the file.
  * @returns The content or `undefined` when it is unknown.
  */
-export function getFileContent(jobId: string, fileName: string): string | undefined {
-  return jobs.get(jobId)?.contents.get(fileName);
+export function getFileContent(jobId: string, filePath: string): string | undefined {
+  return jobs.get(jobId)?.contents.get(filePath);
 }
 
 /**
@@ -388,19 +435,129 @@ export async function processFile(
     const isAmbiguous = match.status === MatchStatus.AMBIGUOUS;
     const hasBlockingError = parsed.issues.some((issue) => issue.severity === 'error');
 
+    // The movie already exists in MongoDB and the file brings nothing new:
+    // the file is marked as "already there" and skipped. Nothing is written
+    // and the file does not wait for a confirmation.
+    const isAlreadyUpToDate =
+      match.status === MatchStatus.MATCHED &&
+      Boolean(match.movie) &&
+      !comparison.hasChanges;
+
+    // Another file of the same batch already targets the same movie: only the
+    // first one is kept, the other ones are skipped.
+    const targetKey = match.movie?._id ?? parsed.mapped.slug ?? parsed.mapped.sourceId;
+    const ownerId = targetKey ? state.claims.get(targetKey) : undefined;
+    const owner = ownerId
+      ? state.job.files.find((entry) => entry.id === ownerId)
+      : undefined;
+    // The owner hands the movie over when it carries nothing to write (the
+    // movie was already up-to-date) or when it failed.
+    const ownerIsInactive =
+      !owner ||
+      owner.status === ImportStatus.SKIPPED ||
+      owner.status === ImportStatus.FAILED ||
+      owner.status === ImportStatus.CANCELLED;
+
+    const duplicatedInBatch = Boolean(
+      ownerId && ownerId !== fileId && !ownerIsInactive,
+    );
+
+    if (targetKey && (!ownerId || ownerId === fileId || ownerIsInactive)) {
+      state.claims.set(targetKey, fileId);
+    }
+
+    if (hasBlockingError) {
+      updateFile(jobId, fileId, {
+        stage: ProcessingStage.COMPLETED,
+        progress: 100,
+        matchStatus: match.status,
+        existingMovieId: match.movie?._id,
+        status: ImportStatus.FAILED,
+        error: parsed.issues.find((issue) => issue.severity === 'error')?.message,
+        finishedAt: new Date().toISOString(),
+      });
+
+      return getJob(jobId)?.files.find((entry) => entry.id === fileId);
+    }
+
+    if (isAlreadyUpToDate) {
+      updateFile(jobId, fileId, {
+        stage: ProcessingStage.COMPLETED,
+        progress: 100,
+        matchStatus: match.status,
+        existingMovieId: match.movie?._id,
+        status: ImportStatus.SKIPPED,
+        skipReason: SkipReason.ALREADY_EXISTS,
+        alreadyExists: true,
+        changedFields: [],
+        imported: false,
+        error: undefined,
+        finishedAt: new Date().toISOString(),
+      });
+
+      addLog(jobId, {
+        fileId,
+        fileName: file.fileName,
+        movieName: parsed.mapped.name ?? '(unknown)',
+        slug: parsed.mapped.slug ?? '',
+        movieId: match.movie?._id,
+        operation: ImportOperation.NONE,
+        updatedFields: [],
+        status: ImportStatus.SKIPPED,
+        imported: false,
+        skipped: true,
+        error: 'The movie already exists in MongoDB and the file brings no change',
+        timestamp: new Date().toISOString(),
+      });
+
+      return getJob(jobId)?.files.find((entry) => entry.id === fileId);
+    }
+
+    if (duplicatedInBatch) {
+      updateFile(jobId, fileId, {
+        stage: ProcessingStage.COMPLETED,
+        progress: 100,
+        matchStatus: match.status,
+        existingMovieId: match.movie?._id,
+        status: ImportStatus.SKIPPED,
+        skipReason: SkipReason.DUPLICATE_IN_BATCH,
+        alreadyExists: Boolean(match.movie),
+        changedFields: comparison.changedFields,
+        imported: false,
+        error: undefined,
+        finishedAt: new Date().toISOString(),
+      });
+
+      addLog(jobId, {
+        fileId,
+        fileName: file.fileName,
+        movieName: parsed.mapped.name ?? '(unknown)',
+        slug: parsed.mapped.slug ?? '',
+        movieId: match.movie?._id,
+        operation: ImportOperation.NONE,
+        updatedFields: [],
+        status: ImportStatus.SKIPPED,
+        imported: false,
+        skipped: true,
+        error: 'Another file of the same batch already targets this movie',
+        timestamp: new Date().toISOString(),
+      });
+
+      return getJob(jobId)?.files.find((entry) => entry.id === fileId);
+    }
+
     updateFile(jobId, fileId, {
       stage: ProcessingStage.COMPLETED,
       progress: 100,
       matchStatus: match.status,
       existingMovieId: match.movie?._id,
-      status: hasBlockingError
-        ? ImportStatus.FAILED
-        : isAmbiguous
-          ? ImportStatus.NEEDS_REVIEW
-          : ImportStatus.SUCCESS,
-      error: hasBlockingError
-        ? parsed.issues.find((issue) => issue.severity === 'error')?.message
-        : undefined,
+      alreadyExists: Boolean(match.movie),
+      changedFields: comparison.changedFields,
+      // The file is only parsed and compared at this point: nothing was
+      // written into MongoDB yet. The write happens when the user confirms
+      // the import, so the status is `PARSED` and not `SUCCESS`.
+      status: isAmbiguous ? ImportStatus.NEEDS_REVIEW : ImportStatus.PARSED,
+      error: undefined,
       finishedAt: new Date().toISOString(),
     });
 
@@ -446,10 +603,15 @@ export function persistHistory(job: ImportJob): void {
       logs: job.logs,
       files: job.files.map((file) => ({
         fileName: file.fileName,
+        filePath: file.filePath,
         status: file.status,
+        imported: file.imported,
         detectedName: file.detectedName,
         matchStatus: file.matchStatus,
         existingMovieId: file.existingMovieId,
+        alreadyExists: file.alreadyExists,
+        skipReason: file.skipReason,
+        changedFields: file.changedFields,
         error: file.error,
         startedAt: file.startedAt,
         finishedAt: file.finishedAt,

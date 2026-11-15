@@ -91,6 +91,14 @@ export const appConfig = {
   adminApiKey: readString('IMPORT_ADMIN_API_KEY', ''),
   /** Path of the folder where the import history is persisted. */
   historyDir: readString('IMPORT_HISTORY_DIR', path.resolve(process.cwd(), 'data', 'history')),
+  /**
+   * Maximum size accepted for the JSON body of the upload request.
+   *
+   * A folder of TXT files is sent in a single request: the limit must be high
+   * enough to hold a realistic batch, otherwise the upload fails with
+   * `413 request entity too large`.
+   */
+  maxRequestBodySize: readString('IMPORT_MAX_BODY_SIZE', '512mb'),
 } as const;
 
 /**

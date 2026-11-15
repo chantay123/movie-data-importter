@@ -1,5 +1,5 @@
 import type { FileProgress } from '../../types/api.types';
-import { ImportStatus } from '../../types/movieImport.types';
+import { ImportStatus, SkipReason } from '../../types/movieImport.types';
 import { formatBytes } from '../../utils/format';
 
 /**
@@ -29,6 +29,29 @@ function formatTime(value?: string): string {
 
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('vi-VN');
+}
+
+/**
+ * Builds the label of the status of a file.
+ *
+ * A file that was skipped because the movie already exists and brings no
+ * change is displayed as "đã có" instead of the raw `SKIPPED` status.
+ *
+ * @param file - The file to describe.
+ * @returns The label and the CSS modifier of the badge.
+ */
+function describeStatus(file: FileProgress): { label: string; modifier: string } {
+  if (file.status === ImportStatus.SKIPPED) {
+    if (file.skipReason === SkipReason.ALREADY_EXISTS) {
+      return { label: 'Đã có (không đổi)', modifier: 'UNCHANGED' };
+    }
+
+    if (file.skipReason === SkipReason.DUPLICATE_IN_BATCH) {
+      return { label: 'Trùng trong lô', modifier: 'DUPLICATE' };
+    }
+  }
+
+  return { label: file.status, modifier: file.status };
 }
 
 /**
@@ -69,6 +92,8 @@ export function FileProgressTable(props: FileProgressTableProps): JSX.Element {
               <th>Server</th>
               <th>Tập</th>
               <th>Đối chiếu DB</th>
+              <th>Đã ghi DB</th>
+              <th>Thay đổi</th>
               <th>Bắt đầu</th>
               <th>Kết thúc</th>
               <th>Lỗi</th>
@@ -83,11 +108,20 @@ export function FileProgressTable(props: FileProgressTableProps): JSX.Element {
                 onClick={() => props.onSelect(file.id)}
                 style={{ cursor: 'pointer' }}
               >
-                <td className="mono">{file.fileName}</td>
-                <td>{formatBytes(file.fileSize)}</td>
+                <td className="mono">
+                  {file.fileName}
+                  {file.filePath && file.filePath !== file.fileName ? (
+                    <div className="muted mono" style={{ fontSize: '0.8em' }}>
+                      {file.filePath}
+                    </div>
+                  ) : null}
+                </td>
+                <td className="muted">{formatBytes(file.fileSize)}</td>
                 <td className="muted">{file.sourceFormat ?? '-'}</td>
                 <td>
-                  <span className={`badge badge--${file.status}`}>{file.status}</span>
+                  <span className={`badge badge--${describeStatus(file).modifier}`}>
+                    {describeStatus(file).label}
+                  </span>
                 </td>
                 <td className="muted">{file.stage}</td>
                 <td>
@@ -107,6 +141,28 @@ export function FileProgressTable(props: FileProgressTableProps): JSX.Element {
                     '-'
                   )}
                 </td>
+                <td>
+                  {file.imported === true ? (
+                    <span className="badge badge--SUCCESS">Đã ghi</span>
+                  ) : file.status === ImportStatus.SKIPPED ? (
+                    <span className="muted">—</span>
+                  ) : file.status === ImportStatus.PARSED ? (
+                    <span className="badge badge--PARSED">Chờ import</span>
+                  ) : (
+                    '-'
+                  )}
+                </td>
+                <td className="muted">
+                  {file.status === ImportStatus.SKIPPED
+                    ? file.skipReason === SkipReason.ALREADY_EXISTS
+                      ? 'Không có thay đổi'
+                      : 'Trùng phim trong lô'
+                    : (file.changedFields?.length ?? 0) > 0
+                      ? `${file.changedFields?.length} trường: ${file.changedFields?.join(', ')}`
+                      : file.status === ImportStatus.PARSED
+                        ? 'Không có'
+                        : '-'}
+                </td>
                 <td className="muted">{formatTime(file.startedAt)}</td>
                 <td className="muted">{formatTime(file.finishedAt)}</td>
                 <td className="diff-old">{file.error ?? ''}</td>
@@ -121,6 +177,18 @@ export function FileProgressTable(props: FileProgressTableProps): JSX.Element {
                       }}
                     >
                       Retry
+                    </button>
+                  ) : file.status === ImportStatus.SKIPPED ? (
+                    <button
+                      type="button"
+                      className="btn btn--sm"
+                      title="Đối chiếu lại với MongoDB"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        props.onRetry(file);
+                      }}
+                    >
+                      Kiểm tra lại
                     </button>
                   ) : null}
                 </td>

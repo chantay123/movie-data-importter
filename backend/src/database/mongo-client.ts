@@ -1,5 +1,6 @@
 import { appConfig, hasDatabaseConfig } from '../config/app.config';
 import { getMongoose, getCrawlerProjectPath } from './crawlerModels';
+import { applyMongoNetworkWorkarounds } from './mongoNetwork';
 
 /**
  * MongoDB connection manager.
@@ -29,6 +30,8 @@ export async function connectDatabase(): Promise<void> {
   }
 
   const mongoose = getMongoose();
+
+  applyMongoNetworkWorkarounds();
 
   connectionPromise = (async (): Promise<void> => {
     mongoose.set('bufferCommands', false);

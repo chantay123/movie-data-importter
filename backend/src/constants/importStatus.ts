@@ -10,7 +10,12 @@ export enum ImportStatus {
   WAITING = 'WAITING',
   /** The file is currently being parsed / compared / imported. */
   PROCESSING = 'PROCESSING',
-  /** The file was processed and (when applicable) imported without error. */
+  /**
+   * The file was parsed and compared with the database, but nothing was
+   * written yet: the user still has to confirm the import.
+   */
+  PARSED = 'PARSED',
+  /** The file was written into MongoDB. */
   SUCCESS = 'SUCCESS',
   /** The file could not be processed because of an error. */
   FAILED = 'FAILED',
@@ -20,6 +25,24 @@ export enum ImportStatus {
   SKIPPED = 'SKIPPED',
   /** The processing of the file was cancelled by the user. */
   CANCELLED = 'CANCELLED',
+}
+
+/**
+ * Reason why a file was skipped.
+ */
+export enum SkipReason {
+  /**
+   * The movie already exists in MongoDB and the incoming file does not bring
+   * any change: the file is marked as "already there" and ignored.
+   */
+  ALREADY_EXISTS = 'ALREADY_EXISTS',
+  /**
+   * Another file of the same job already targets the same movie: only the
+   * first one is kept.
+   */
+  DUPLICATE_IN_BATCH = 'DUPLICATE_IN_BATCH',
+  /** The file is not a `.txt` file and cannot be parsed. */
+  NOT_A_TXT_FILE = 'NOT_A_TXT_FILE',
 }
 
 /**

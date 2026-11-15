@@ -40,6 +40,22 @@ async function readFile(file: File): Promise<string> {
 }
 
 /**
+ * Reads the relative path of a file selected inside a folder.
+ *
+ * The `webkitRelativePath` attribute is only filled when the folder input is
+ * used. The plain file input leaves it empty, in which case the name of the
+ * file is used.
+ *
+ * @param file - The file to read.
+ * @returns The relative path of the file.
+ */
+function readRelativePath(file: File): string {
+  const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
+
+  return relative && relative.length > 0 ? relative : file.name;
+}
+
+/**
  * Reads a folder of `.txt` files.
  *
  * @returns The state and the actions of the folder uploader.
@@ -69,7 +85,7 @@ export function useFolderUpload(): UseFolderUploadResult {
 
       try {
         const content = await readFile(file);
-        accepted.push({ name: file.name, size: file.size, content });
+        accepted.push({ name: file.name, path: readRelativePath(file), size: file.size, content });
       } catch (readError) {
         const message = readError instanceof Error ? readError.message : String(readError);
         setError(`Không thể đọc "${file.name}": ${message}`);
@@ -103,8 +119,10 @@ export function useFolderUpload(): UseFolderUploadResult {
       try {
         const accepted = await loadFiles(fileList);
         setFiles((current) => {
-          const known = new Set(current.map((file) => file.name));
-          return [...current, ...accepted.filter((file) => !known.has(file.name))];
+          // The relative path is the identity of a file inside a folder: two
+          // files of different sub-folders can share the same name.
+          const known = new Set(current.map((file) => file.path));
+          return [...current, ...accepted.filter((file) => !known.has(file.path))];
         });
       } finally {
         setIsReading(false);

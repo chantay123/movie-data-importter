@@ -90,7 +90,11 @@ export function ImportHistory(): JSX.Element {
                     </td>
                     <td className="muted">{log.updatedFields.join(', ') || '-'}</td>
                     <td>
-                      <span className={`badge badge--${log.status}`}>{log.status}</span>
+                      {log.skipped === true ? (
+                        <span className="badge badge--UNCHANGED">Đã có — bỏ qua</span>
+                      ) : (
+                        <span className={`badge badge--${log.status}`}>{log.status}</span>
+                      )}
                     </td>
                     <td className="diff-old">{log.error ?? ''}</td>
                   </tr>

@@ -75,17 +75,29 @@ export interface CrawlerModels {
   /** The `Year` master data model. */
   Year: { findOrCreate(year: number | string): Promise<{ _id?: unknown } | null> };
   /** The `MovieCategory` junction model. */
-  MovieCategory: { setCategories(movieId: string, ids: unknown[]): Promise<unknown> };
+  MovieCategory: {
+    setCategories(movieId: string, ids: unknown[]): Promise<unknown>;
+    getCategoriesForMovie(movieId: string): Promise<unknown[]>;
+  };
   /** The `MovieCountry` junction model. */
-  MovieCountry: { setCountries(movieId: string, ids: unknown[]): Promise<unknown> };
+  MovieCountry: {
+    setCountries(movieId: string, ids: unknown[]): Promise<unknown>;
+    getCountriesForMovie(movieId: string): Promise<unknown[]>;
+  };
   /** The `MovieActor` junction model. */
   MovieActor: { setActors(movieId: string, actors: unknown[]): Promise<unknown> };
   /** The `MovieDirector` junction model. */
   MovieDirector: { setDirectors(movieId: string, directors: unknown[]): Promise<unknown> };
   /** The `MovieFormat` junction model. */
-  MovieFormat: { setFormats(movieId: string, ids: unknown[]): Promise<unknown> };
+  MovieFormat: {
+    setFormats(movieId: string, ids: unknown[]): Promise<unknown>;
+    getFormatsForMovie(movieId: string): Promise<unknown[]>;
+  };
   /** The `MovieYear` junction model. */
-  MovieYear: { setYear(movieId: string, id: unknown): Promise<unknown> };
+  MovieYear: {
+    setYear(movieId: string, id: unknown): Promise<unknown>;
+    getYearForMovie(movieId: string): Promise<unknown>;
+  };
 }
 
 /**

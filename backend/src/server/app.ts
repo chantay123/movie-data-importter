@@ -26,7 +26,9 @@ export function createApp(): Express {
     }),
   );
 
-  app.use(express.json({ limit: '64mb' }));
+  // A whole folder of TXT files is sent in a single JSON body: the limit has
+  // to be generous enough, otherwise the upload fails with a 413.
+  app.use(express.json({ limit: appConfig.maxRequestBodySize }));
 
   app.get('/health', (_req, res) => {
     res.json({

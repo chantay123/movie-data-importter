@@ -8,6 +8,8 @@
 export enum ImportStatus {
   WAITING = 'WAITING',
   PROCESSING = 'PROCESSING',
+  /** The file was parsed and compared, but nothing was written yet. */
+  PARSED = 'PARSED',
   SUCCESS = 'SUCCESS',
   FAILED = 'FAILED',
   NEEDS_REVIEW = 'NEEDS_REVIEW',
@@ -65,4 +67,13 @@ export enum ImportOperation {
   CREATE = 'CREATE',
   UPDATE = 'UPDATE',
   NONE = 'NONE',
+}
+
+/**
+ * Reason why a file was skipped.
+ */
+export enum SkipReason {
+  ALREADY_EXISTS = 'ALREADY_EXISTS',
+  DUPLICATE_IN_BATCH = 'DUPLICATE_IN_BATCH',
+  NOT_A_TXT_FILE = 'NOT_A_TXT_FILE',
 }

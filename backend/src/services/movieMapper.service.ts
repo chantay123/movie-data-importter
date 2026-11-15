@@ -14,6 +14,7 @@ import type {
   RawMovieInfo,
 } from '../types/movieImport.types';
 import { buildSearchKey, stripDiacritics } from '../utils/normalizeText';
+import { slugify } from '../utils/normalizeSlug';
 /**
  * Converts a raw payload into the shape expected by the MongoDB `Movie` model.
  *
@@ -785,7 +786,14 @@ export function mapExtractedMovie(extracted: ExtractedMovieData): MappedMovie {
 
   const slug = toTrimmedString(extracted.slug);
   if (slug) {
-    mapped.slug = slug.toLowerCase().substring(0, MAX_TEXT_LENGTH);
+    // The slug is normalized before it is stored: the `Movie` schema declares
+    // it as a lowercase ASCII slug and the crawler refuses to save a slug
+    // carrying Vietnamese diacritics.
+    const normalizedSlug = slugify(slug);
+
+    if (normalizedSlug) {
+      mapped.slug = normalizedSlug.substring(0, MAX_TEXT_LENGTH);
+    }
   }
 
   // The production documents use the slug as the source identifier: the
@@ -1048,7 +1056,11 @@ export function mapMovie(raw: RawMovieJson): MappedMovie {
 
   const slug = toTrimmedString(raw.slug);
   if (slug) {
-    mapped.slug = slug.toLowerCase().substring(0, MAX_TEXT_LENGTH);
+    const normalizedSlug = slugify(slug);
+
+    if (normalizedSlug) {
+      mapped.slug = normalizedSlug.substring(0, MAX_TEXT_LENGTH);
+    }
   }
 
   const releaseDate = mapReleaseDate(info.year);

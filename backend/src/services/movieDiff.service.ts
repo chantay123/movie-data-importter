@@ -45,6 +45,133 @@ export const PROTECTED_FIELDS: ReadonlySet<string> = new Set([
 const ARRAY_MERGE_FIELDS: ReadonlySet<string> = new Set(['actor', 'director']);
 
 /**
+ * Fields that are derived from another field and therefore never decide on
+ * their own whether a movie changed.
+ *
+ * The search keys are recomputed from the title: a document that does not
+ * store them yet does not differ from the incoming payload in a meaningful
+ * way, and reporting a change for them would prevent the importer from
+ * recognizing an already up-to-date movie.
+ */
+const DERIVED_FIELDS: ReadonlySet<string> = new Set([
+  'name_normalized',
+  'originName_normalized',
+]);
+
+/**
+ * Backup field of an image field, used when the image was migrated.
+ */
+const IMAGE_BACKUP_FIELDS: ReadonlyMap<string, string> = new Map([
+  ['thumbUrl', 'originalThumbUrl'],
+  ['posterUrl', 'originalPosterUrl'],
+]);
+
+/**
+ * Checks whether a URL points to an image hosted on Cloudinary.
+ *
+ * The images of the production documents were migrated to Cloudinary by the
+ * dedicated migration tool: the document then holds a `res.cloudinary.com`
+ * URL while the source file still carries the URL of the original image.
+ *
+ * The importer never uploads anything, therefore it must never overwrite a
+ * migrated URL with the raw URL of the source: the migrated image would be
+ * lost.
+ *
+ * @param value - Value to test.
+ * @returns `true` when the value is a Cloudinary URL.
+ */
+function isCloudinaryUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || value.length === 0) {
+    return false;
+  }
+
+  try {
+    return new URL(value).hostname.toLowerCase().endsWith('res.cloudinary.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalizes the name of an episode so two spellings of the same episode
+ * compare equal.
+ *
+ * The crawler stores the bare episode number (`1`) while the sources report a
+ * labelled episode (`Tập 1`, `Tap 1`, `Episode 1`): the two describe the same
+ * episode and must not be reported as a change.
+ *
+ * @param value - Raw episode name.
+ * @returns The normalized episode name.
+ */
+function normalizeEpisodeName(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const collapsed = value.replace(/\s+/g, ' ').trim().toLowerCase();
+
+  // The episode number is the only reliable part of the label.
+  const digits = collapsed.replace(/\D/g, '');
+
+  if (digits.length > 0) {
+    return digits.replace(/^0+(?=\d)/, '');
+  }
+
+  return collapsed;
+}
+
+/**
+ * Converts a value into a timestamp.
+ *
+ * @param value - Date, ISO string or number.
+ * @returns The timestamp, or `undefined` when the value is not a usable date.
+ */
+function toTimestamp(value: unknown): number | undefined {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? undefined : value.getTime();
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.getTime();
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.getTime();
+  }
+
+  return undefined;
+}
+
+/**
+ * Checks whether two dates describe the same release year.
+ *
+ * The source only reports a year: the importer stores the first day of that
+ * year in UTC while the crawler stores it in the local timezone. The two dates
+ * can therefore be one day apart, which is tolerated here.
+ *
+ * @param left - First value.
+ * @param right - Second value.
+ * @returns `true` when both values fall on the same year.
+ */
+function isSameReleaseDate(left: unknown, right: unknown): boolean {
+  const leftTime = toTimestamp(left);
+  const rightTime = toTimestamp(right);
+
+  if (leftTime === undefined || rightTime === undefined) {
+    return left === right;
+  }
+
+  // The dates are one day apart: they describe the same release year.
+  if (Math.abs(leftTime - rightTime) < 24 * 60 * 60 * 1000) {
+    return true;
+  }
+
+  return new Date(leftTime).getUTCFullYear() === new Date(rightTime).getUTCFullYear();
+}
+
+/**
  * Compares two nested objects, ignoring the keys that the importer never
  * writes and the keys that are absent from the incoming payload.
  *
@@ -116,7 +243,6 @@ function isSameValue(left: unknown, right: unknown): boolean {
   if (left === right) {
     return true;
   }
-
   if (left instanceof Date || right instanceof Date) {
     const leftTime = left instanceof Date ? left.getTime() : new Date(String(left)).getTime();
     const rightTime = right instanceof Date ? right.getTime() : new Date(String(right)).getTime();
@@ -152,7 +278,61 @@ function isSameValue(left: unknown, right: unknown): boolean {
 }
 
 /**
+ * Tags of the HTML markup removed before comparing two summaries.
+ */
+const HTML_TAG_PATTERN = /<\/?[a-z][^>]*>/gi;
+
+/**
+ * Normalizes a summary so two spellings of the same text compare equal.
+ *
+ * The summaries stored by the crawler are plain text while the payloads of the
+ * sources sometimes carry HTML markup: the markup and the whitespace are
+ * removed before the comparison.
+ *
+ * @param value - Raw summary.
+ * @returns The normalized summary.
+ */
+function normalizeContent(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .replace(HTML_TAG_PATTERN, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Compares two summaries.
+ *
+ * @param left - First summary.
+ * @param right - Second summary.
+ * @returns `true` when both summaries hold the same text.
+ */
+function isSameContent(left: unknown, right: unknown): boolean {
+  if (isSameValue(left, right)) {
+    return true;
+  }
+
+  const leftText = normalizeContent(left);
+  const rightText = normalizeContent(right);
+
+  if (leftText.length === 0 || rightText.length === 0) {
+    return false;
+  }
+
+  return leftText === rightText;
+}
+
+/**
  * Compares two arrays of strings, ignoring the order and the case.
+ *
+ * The comparison is a set comparison: a value that is present in both arrays
+ * is ignored, whatever its position. The length is therefore not compared:
+ * the database may hold more values than the file (e.g. a longer cast that the
+ * source no longer reports), which is not a change of the movie.
  *
  * @param left - First array.
  * @param right - Second array.
@@ -163,25 +343,25 @@ function isSameStringSet(left: unknown, right: unknown): boolean {
     return false;
   }
 
-  if (left.length !== right.length) {
-    return false;
-  }
-
   const normalize = (values: unknown[]): string[] =>
-    values.map((value) => normalizeText(String(value ?? ''))).sort();
+    values.map((value) => normalizeText(String(value ?? ''))).filter((value) => value.length > 0);
 
   const normalizedLeft = normalize(left);
   const normalizedRight = normalize(right);
 
-  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+  // Every value of the incoming payload must already be known.
+  return normalizedRight.every((value) => normalizedLeft.includes(value));
 }
 
 /**
  * Checks whether two episode server lists describe the same episodes.
  *
+ * The comparison is done server by server: the name of the server and the
+ * whole content of every episode (name, links) must be identical.
+ *
  * @param left - First list of servers.
  * @param right - Second list of servers.
- * @returns `true` when both lists contain the same servers and episodes.
+ * @returns `true` when both lists hold the same servers and episodes.
  */
 function isSameEpisodeSet(left: unknown, right: unknown): boolean {
   if (!Array.isArray(left) || !Array.isArray(right)) {
@@ -197,7 +377,15 @@ function isSameEpisodeSet(left: unknown, right: unknown): boolean {
       .map(
         (server) =>
           `${server.server_name.toLowerCase()}:${server.server_data
-            .map((episode) => episode.slug.toLowerCase())
+            .map(
+              (episode) =>
+                [
+                  episode.slug.toLowerCase(),
+                  normalizeEpisodeName(episode.name),
+                  episode.link_embed,
+                  episode.link_m3u8,
+                ].join('|'),
+            )
             .join(',')}`,
       )
       .sort();
@@ -209,17 +397,120 @@ function isSameEpisodeSet(left: unknown, right: unknown): boolean {
 }
 
 /**
+ * Compares the value of a field between the database and the incoming file.
+ *
+ * @param field - Name of the field.
+ * @param currentValue - Value stored in MongoDB.
+ * @param incomingValue - Value coming from the TXT file.
+ * @param backupValue - Value of the backup field of the document, used when the
+ *   field was migrated (e.g. the URL of the source image).
+ * @returns `true` when both values are equivalent.
+ */
+function isSameFieldValue(
+  field: string,
+  currentValue: unknown,
+  incomingValue: unknown,
+  backupValue?: unknown,
+): boolean {
+  if (field === 'episodes') {
+    return isSameEpisodeSet(currentValue, incomingValue);
+  }
+
+  if (field === 'actor' || field === 'director') {
+    return isSameStringSet(currentValue, incomingValue);
+  }
+
+  if (field === 'categories' || field === 'countries') {
+    // The relations are compared by their name: the slug is derived from the
+    // name and the master data may carry a different one.
+    const toNames = (values: unknown): string[] => {
+      if (!Array.isArray(values)) {
+        return [];
+      }
+
+      return values
+        .map((value) => {
+          if (typeof value === 'string') {
+            return value;
+          }
+
+          const name = (value as { name?: unknown })?.name;
+          return typeof name === 'string' ? name : '';
+        })
+        .map((value) => normalizeText(value))
+        .filter((value) => value.length > 0);
+    };
+
+    const currentNames = toNames(currentValue);
+    const incomingNames = toNames(incomingValue);
+
+    return (
+      currentNames.length === incomingNames.length &&
+      incomingNames.every((value) => currentNames.includes(value))
+    );
+  }
+
+  if (field === 'trailer') {
+    return isSameManagedObject(currentValue, incomingValue, MANAGED_TRAILER_KEYS);
+  }
+
+  if (field === 'tmdb') {
+    return isSameManagedObject(currentValue, incomingValue, MANAGED_TMDB_KEYS);
+  }
+
+  if (field === 'releaseDate') {
+    return isSameReleaseDate(currentValue, incomingValue);
+  }
+
+  if (field === 'content') {
+    return isSameContent(currentValue, incomingValue);
+  }
+
+  if (IMAGE_BACKUP_FIELDS.has(field)) {
+    // The image was migrated to Cloudinary: the document holds the new URL and
+    // the URL of the source in the backup field. The file still carries the
+    // URL of the source, therefore both values are compared.
+    if (isSameValue(currentValue, incomingValue)) {
+      return true;
+    }
+
+    if (
+      backupValue !== undefined &&
+      backupValue !== null &&
+      isSameValue(backupValue, incomingValue)
+    ) {
+      return true;
+    }
+
+    // The document holds a migrated Cloudinary URL and the file carries the
+    // URL of the original image: the two are never equal, but the migrated
+    // image must not be replaced by the raw URL of the source. The importer
+    // never uploads anything, therefore the Cloudinary URL is kept.
+    if (isCloudinaryUrl(currentValue)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  return isSameValue(currentValue, incomingValue);
+}
+
+/**
  * Builds the comparison of a single field.
  *
  * @param field - Name of the field.
  * @param currentValue - Value stored in MongoDB.
  * @param incomingValue - Value coming from the TXT file.
+ * @param backupValue - Value of the backup field of the document, used when the
+ *   field was migrated (e.g. the URL of the source image).
  * @returns The comparison of the field.
  */
 function compareField(
   field: string,
   currentValue: unknown,
   incomingValue: unknown,
+  backupValue?: unknown,
 ): FieldDiff {
   const isProtected = PROTECTED_FIELDS.has(field);
 
@@ -245,16 +536,7 @@ function compareField(
     };
   }
 
-  const same =
-    field === 'episodes'
-      ? isSameEpisodeSet(currentValue, incomingValue)
-      : field === 'actor' || field === 'director'
-        ? isSameStringSet(currentValue, incomingValue)
-        : field === 'trailer'
-          ? isSameManagedObject(currentValue, incomingValue, MANAGED_TRAILER_KEYS)
-          : field === 'tmdb'
-            ? isSameManagedObject(currentValue, incomingValue, MANAGED_TMDB_KEYS)
-            : isSameValue(currentValue, incomingValue);
+  const same = isSameFieldValue(field, currentValue, incomingValue, backupValue);
 
   if (same) {
     return {
@@ -331,12 +613,43 @@ export function diffMovie(mapped: MappedMovie, existing?: ExistingMovie): FieldD
       ? (existing as unknown as Record<string, unknown>)[field as string]
       : undefined;
 
-    diffs.push(compareField(field as string, currentValue, incomingValue));
+    const backupField = IMAGE_BACKUP_FIELDS.get(field as string);
+    const backupValue =
+      existing && backupField
+        ? (existing as unknown as Record<string, unknown>)[backupField]
+        : undefined;
+
+    diffs.push(compareField(field as string, currentValue, incomingValue, backupValue));
   }
 
   diffs.push(compareField('actor', existing?.actor, mapped.actor));
   diffs.push(compareField('director', existing?.director, mapped.director));
   diffs.push(compareField('episodes', existing?.episodes, mapped.episodes));
+
+  // The categories, the countries, the format and the year do not live on the
+  // `Movie` document: they are stored in the junction collections of the
+  // crawler. They are compared as well so that the user can decide to
+  // refresh them.
+  //
+  // When the relations could not be read from the junction collections (the
+  // collection is missing, the read failed, ...), the comparison is impossible:
+  // the incoming values would then overwrite relations that were never
+  // compared. The fields are therefore reported as missing, which keeps the
+  // database values and never prevents the importer from recognizing an
+  // already up-to-date movie.
+  const relationsAvailable = !existing || existing.relationsLoaded === true;
+
+  if (relationsAvailable) {
+    diffs.push(compareField('categories', existing?.categories, mapped.categories));
+    diffs.push(compareField('countries', existing?.countries, mapped.countries));
+    diffs.push(compareField('quality', existing?.quality, mapped.quality));
+    diffs.push(compareField('year', existing?.year, mapped.year));
+  } else {
+    diffs.push(compareField('categories', existing?.categories, undefined));
+    diffs.push(compareField('countries', existing?.countries, undefined));
+    diffs.push(compareField('quality', existing?.quality, undefined));
+    diffs.push(compareField('year', existing?.year, undefined));
+  }
 
   // The protected fields are always listed so the user can see that the
   // importer deliberately leaves them untouched.
@@ -380,9 +693,17 @@ export function buildComparison(
 
   const isNew = match.status === MatchStatus.NEW || !match.movie;
 
+  // An ambiguous match has no target document yet: the fields that can be
+  // written are unknown until the user picks one of the candidates.
+  const isAmbiguous = match.status === MatchStatus.AMBIGUOUS && !match.movie;
+
   const updatableFields = diffs
     .filter((diff) => {
       if (diff.isProtected) {
+        return false;
+      }
+
+      if (isAmbiguous) {
         return false;
       }
 
@@ -395,6 +716,20 @@ export function buildComparison(
     })
     .map((diff) => diff.field);
 
+  // The fields that actually differ between the database document and the
+  // incoming file. A field that is missing from the file is never a change:
+  // the value already stored in MongoDB is simply kept. The derived fields
+  // are ignored here: they are recomputed from the title and must not prevent
+  // the importer from recognizing an already up-to-date movie.
+  const changedFields = diffs
+    .filter(
+      (diff) =>
+        diff.status === FieldStatus.CHANGED &&
+        diff.isProtected !== true &&
+        !DERIVED_FIELDS.has(diff.field),
+    )
+    .map((diff) => diff.field);
+
   return {
     fileId,
     matchStatus: match.status as MovieComparison['matchStatus'],
@@ -403,7 +738,54 @@ export function buildComparison(
     candidates: match.candidates,
     diffs,
     updatableFields,
+    // A movie that does not exist yet always brings something to write.
+    hasChanges: isNew || changedFields.length > 0,
+    changedFields,
   };
+}
+
+/**
+ * Resolves the target document of an ambiguous match and rebuilds the
+ * comparison against it.
+ *
+ * An ambiguous match carries several candidates and no target document: the
+ * fields that can be written are unknown until the user picks one of the
+ * candidates. Without this step, the importer would overwrite every field of
+ * the chosen document without ever comparing it with the incoming file.
+ *
+ * @param fileId - Identifier of the file the comparison belongs to.
+ * @param mapped - The mapped movie coming from the TXT file.
+ * @param comparison - The comparison built when the file was parsed.
+ * @param targetMovieId - Identifier of the document picked by the user.
+ * @returns The comparison against the chosen document, or the original
+ *   comparison when the target is unknown.
+ */
+export function resolveAmbiguousTarget(
+  fileId: string,
+  mapped: MappedMovie,
+  comparison: MovieComparison,
+  targetMovieId: string | undefined,
+): MovieComparison {
+  if (comparison.matchStatus !== MatchStatus.AMBIGUOUS) {
+    return comparison;
+  }
+
+  if (!targetMovieId) {
+    return comparison;
+  }
+
+  const target = comparison.candidates.find((candidate) => candidate._id === targetMovieId);
+
+  if (!target) {
+    return comparison;
+  }
+
+  return buildComparison(fileId, mapped, {
+    status: MatchStatus.MATCHED,
+    matchedBy: comparison.matchedBy,
+    movie: target,
+    candidates: comparison.candidates,
+  });
 }
 
 /**

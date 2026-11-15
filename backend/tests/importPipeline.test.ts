@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ImportStatus as Status, ProcessingStage } from '../src/constants/importStatus';
+import { ImportStatus as Status, ProcessingStage, SkipReason } from '../src/constants/importStatus';
 import { buildTxtContent, VALID_MOVIE_JSON } from './fixtures/movieFixtures';
 
 /**
@@ -159,13 +159,18 @@ describe('import pipeline (end to end, without a live database)', () => {
   });
 
   it('parses a TXT file, maps it and reports the file as processed', async () => {
-    const job = createJob(['movie-1.txt'], new Map([['movie-1.txt', 512]]));
+    const job = createJob([
+      { path: 'movie-1.txt', name: 'movie-1.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+    ]);
     const file = job.files[0];
 
     await processFile(job.id, file.id, buildTxtContent(VALID_MOVIE_JSON));
 
     const processed = getJob(job.id)?.files[0];
-    expect(processed?.status).toBe(Status.SUCCESS);
+    // The file is only parsed and compared: it is not written until the user
+    // confirms the import.
+    expect(processed?.status).toBe(Status.PARSED);
+    expect(processed?.imported).toBeFalsy();
     expect(processed?.stage).toBe(ProcessingStage.COMPLETED);
     expect(processed?.detectedName).toBe('Bác Sĩ X');
     expect(processed?.episodeCount).toBe(3);
@@ -174,13 +179,10 @@ describe('import pipeline (end to end, without a live database)', () => {
   });
 
   it('reports a broken file as failed without stopping the batch', async () => {
-    const job = createJob(
-      ['broken.txt', 'movie-1.txt'],
-      new Map([
-        ['broken.txt', 20],
-        ['movie-1.txt', 512],
-      ]),
-    );
+    const job = createJob([
+      { path: 'broken.txt', name: 'broken.txt', size: 20, content: 'this is not json' },
+      { path: 'movie-1.txt', name: 'movie-1.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+    ]);
 
     const [broken, valid] = job.files;
 
@@ -190,8 +192,21 @@ describe('import pipeline (end to end, without a live database)', () => {
     const files = getJob(job.id)?.files ?? [];
     expect(files[0]?.status).toBe(Status.FAILED);
     expect(files[0]?.error).toContain('movieData');
-    expect(files[1]?.status).toBe(Status.SUCCESS);
+    expect(files[1]?.status).toBe(Status.PARSED);
     expect(getJob(job.id)?.counters.processed).toBe(2);
+  });
+
+  it('keeps two files of different sub-folders apart', () => {
+    const job = createJob([
+      { path: 'a/movie.txt', name: 'movie.txt', size: 10, content: 'a' },
+      { path: 'b/movie.txt', name: 'movie.txt', size: 10, content: 'b' },
+    ]);
+
+    expect(job.files).toHaveLength(2);
+    expect(job.files[0]?.fileName).toBe('movie.txt');
+    expect(job.files[1]?.fileName).toBe('movie.txt');
+    expect(job.files[0]?.filePath).toBe('a/movie.txt');
+    expect(job.files[1]?.filePath).toBe('b/movie.txt');
   });
 
   it('classifies a movie as NEW when the database does not contain it', async () => {
@@ -286,7 +301,9 @@ describe('import pipeline (end to end, without a live database)', () => {
   });
 
   it('stores the comparison of a processed file so the panel can display it', async () => {
-    const job = createJob(['movie-1.txt'], new Map([['movie-1.txt', 512]]));
+    const job = createJob([
+      { path: 'movie-1.txt', name: 'movie-1.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+    ]);
     const file = job.files[0];
 
     await processFile(job.id, file.id, buildTxtContent(VALID_MOVIE_JSON));
@@ -303,6 +320,128 @@ describe('import pipeline (end to end, without a live database)', () => {
     setComparison(job.id, comparison);
 
     expect(getJob(job.id)?.counters.total).toBe(1);
-    expect(getJob(job.id)?.counters.success).toBe(1);
+    expect(getJob(job.id)?.counters.parsed).toBe(1);
+    expect(getJob(job.id)?.counters.imported).toBe(0);
+  });
+
+  it('marks a file as "already there" and skips it when the movie brings no change', async () => {
+    collection.push({
+      _id: 'movie_existing',
+      name: 'Bác Sĩ X',
+      slug: 'bac-si-x',
+      originName: 'Doctor X',
+      content: 'Nội dung tóm tắt của bộ phim Bác Sĩ X.',
+      sourceId: 'ophim-abc123',
+      releaseDate: new Date(Date.UTC(2023, 0, 1)),
+      status: 'completed',
+      time: '45 phút/tập',
+      episodeCurrent: '10',
+      episodeTotal: '12',
+      lang: 'Vietsub',
+      thumbUrl: 'https://img.example.com/bac-si-x-thumb.jpg',
+      posterUrl: 'https://img.example.com/bac-si-x-poster.jpg',
+      actor: ['Nguyễn Văn A', 'Trần Thị B'],
+      director: ['Đạo diễn C'],
+      tmdb: { id: '12345', type: 'tv', season: 1 },
+      episodes: [
+        {
+          server_name: 'Vietsub #1',
+          server_data: [
+            {
+              name: '1',
+              slug: 'tap-1',
+              filename: 'tap-1',
+              link_embed: 'https://example.com/embed/episode-1',
+              link_m3u8: '',
+            },
+            {
+              name: '2',
+              slug: 'tap-2',
+              filename: 'tap-2',
+              link_embed: 'https://example.com/embed/episode-2',
+              link_m3u8: 'https://example.com/stream/episode-2.m3u8',
+            },
+          ],
+        },
+        {
+          server_name: 'Vietsub #2',
+          server_data: [
+            {
+              name: '1',
+              slug: 'tap-1',
+              filename: 'tap-1',
+              link_embed: 'https://example.com/embed/episode-1-server2',
+              link_m3u8: '',
+            },
+          ],
+        },
+      ],
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const job = createJob([
+      { path: 'movie-1.txt', name: 'movie-1.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+    ]);
+    const file = job.files[0];
+
+    await processFile(job.id, file.id, buildTxtContent(VALID_MOVIE_JSON));
+
+    const processed = getJob(job.id)?.files[0];
+
+    expect(processed?.status).toBe(Status.SKIPPED);
+    expect(processed?.skipReason).toBe(SkipReason.ALREADY_EXISTS);
+    expect(processed?.alreadyExists).toBe(true);
+    expect(processed?.imported).toBe(false);
+    expect(processed?.changedFields).toEqual([]);
+
+    const counters = getJob(job.id)?.counters;
+    expect(counters?.skipped).toBe(1);
+    expect(counters?.unchanged).toBe(1);
+    expect(counters?.parsed).toBe(0);
+
+    // Nothing was written: the document is still the one of the database.
+    expect(collection).toHaveLength(1);
+    expect(collection[0]?.['updatedAt']).toBe('2024-01-01T00:00:00.000Z');
+  });
+
+  it('keeps a file importable when the movie of the database differs', async () => {
+    collection.push({
+      _id: 'movie_existing',
+      name: 'Bác Sĩ X',
+      slug: 'bac-si-x',
+      content: 'Nội dung cũ',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    const job = createJob([
+      { path: 'movie-1.txt', name: 'movie-1.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+    ]);
+    const file = job.files[0];
+
+    await processFile(job.id, file.id, buildTxtContent(VALID_MOVIE_JSON));
+
+    const processed = getJob(job.id)?.files[0];
+
+    expect(processed?.status).toBe(Status.PARSED);
+    expect(processed?.alreadyExists).toBe(true);
+    expect(processed?.skipReason).toBeUndefined();
+    expect(processed?.changedFields).toContain('content');
+  });
+
+  it('skips the second file of a batch that targets the same movie', async () => {
+    const job = createJob([
+      { path: 'movie-1.txt', name: 'movie-1.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+      { path: 'movie-2.txt', name: 'movie-2.txt', size: 512, content: buildTxtContent(VALID_MOVIE_JSON) },
+    ]);
+    const [first, second] = job.files;
+
+    await processFile(job.id, first.id, buildTxtContent(VALID_MOVIE_JSON));
+    await processFile(job.id, second.id, buildTxtContent(VALID_MOVIE_JSON));
+
+    const files = getJob(job.id)?.files ?? [];
+
+    expect(files[0]?.status).toBe(Status.PARSED);
+    expect(files[1]?.status).toBe(Status.SKIPPED);
+    expect(files[1]?.skipReason).toBe(SkipReason.DUPLICATE_IN_BATCH);
   });
 });

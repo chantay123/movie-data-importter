@@ -206,6 +206,7 @@ tr.is-selected {
 
 .badge--WAITING { background: #475569; color: #e2e8f0; }
 .badge--PROCESSING { background: var(--info); color: #06283a; }
+.badge--PARSED { background: var(--warning); color: #3a2500; }
 .badge--SUCCESS { background: var(--success); color: #06240f; }
 .badge--FAILED { background: var(--danger); color: #fff; }
 .badge--NEEDS_REVIEW { background: var(--warning); color: #3a2500; }
@@ -223,6 +224,7 @@ tr.is-selected {
 .badge--CREATE { background: var(--success); color: #06240f; }
 .badge--UPDATE { background: var(--info); color: #06283a; }
 .badge--NONE { background: #475569; color: #cbd5e1; }
+.badge--DUPLICATE { background: #475569; color: #cbd5e1; }
 
 .muted {
   color: var(--muted);

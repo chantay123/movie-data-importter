@@ -53,6 +53,20 @@ export interface ImportOutcome {
 const NESTED_MERGE_FIELDS: ReadonlySet<string> = new Set(['trailer', 'tmdb']);
 
 /**
+ * Fields that are not stored on the `Movie` document but in the junction
+ * collections of the crawler (categories, countries, format and year).
+ *
+ * They are written by `syncRelations` and never appear in the `$set`
+ * document.
+ */
+const RELATION_FIELDS: ReadonlySet<string> = new Set([
+  'categories',
+  'countries',
+  'quality',
+  'year',
+]);
+
+/**
  * Merges a nested object with the one already stored in MongoDB.
  *
  * Only the keys carried by the incoming payload are written: the other keys of
@@ -107,6 +121,25 @@ export function buildUpdateDocument(
 
   for (const field of selectedFields) {
     if (PROTECTED_FIELDS.has(field)) {
+      continue;
+    }
+
+    // The categories, the countries, the format and the year are not stored
+    // on the `Movie` document: they are written in the junction collections
+    // by `syncRelations`. They are therefore not part of the `$set` document
+    // but they must be reported as written.
+    if (RELATION_FIELDS.has(field)) {
+      const relationValue = (mapped as unknown as Record<string, unknown>)[field];
+
+      if (relationValue === undefined || relationValue === null) {
+        continue;
+      }
+
+      if (Array.isArray(relationValue) && relationValue.length === 0) {
+        continue;
+      }
+
+      writtenFields.push(field);
       continue;
     }
 
@@ -225,7 +258,7 @@ export async function importMovie(
 
       const created = await Movie.create({ ...document, slug, name });
 
-      await syncRelations(String(created._id), mapped);
+      await syncRelations(String(created._id), mapped, writtenFields);
 
       return {
         operation: ImportOperation.CREATE,
@@ -289,7 +322,7 @@ export async function importMovie(
       throw new Error(`The document ${targetId} could not be updated`);
     }
 
-    await syncRelations(targetId, mapped);
+    await syncRelations(targetId, mapped, writtenFields);
 
     return {
       operation: ImportOperation.UPDATE,
@@ -308,18 +341,33 @@ export async function importMovie(
 
 /**
  * Synchronizes the normalized relations (categories, countries, actors,
- * directors) of a movie.
+ * directors, format and year) of a movie.
  *
  * The master data collections are reused as they are defined by the crawler
  * project: no new collection is created.
  *
+ * Only the relations whose field was actually selected by the user are
+ * written: the `setXxx` helpers of the crawler replace the whole junction
+ * collection of the movie, therefore writing a relation that was not selected
+ * would silently erase the existing one.
+ *
  * @param movieId - Identifier of the movie document.
  * @param mapped - The mapped movie.
+ * @param writtenFields - Fields that were actually written.
  */
-async function syncRelations(movieId: string, mapped: MappedMovie): Promise<void> {
+async function syncRelations(
+  movieId: string,
+  mapped: MappedMovie,
+  writtenFields: readonly string[],
+): Promise<void> {
   const models = getModels();
+  const isWritten = (field: string): boolean => writtenFields.includes(field);
 
-  if (mapped.categories && mapped.categories.length > 0) {
+  // The categories and the countries are not part of the `Movie` document:
+  // they only exist in the junction collections. They are therefore written
+  // whenever the mapped movie carries them and the corresponding document
+  // field was selected.
+  if (mapped.categories && mapped.categories.length > 0 && isWritten('categories')) {
     const categoryIds: unknown[] = [];
 
     for (const category of mapped.categories) {
@@ -335,7 +383,7 @@ async function syncRelations(movieId: string, mapped: MappedMovie): Promise<void
     await models.MovieCategory.setCategories(movieId, categoryIds);
   }
 
-  if (mapped.countries && mapped.countries.length > 0) {
+  if (mapped.countries && mapped.countries.length > 0 && isWritten('countries')) {
     const countryIds: unknown[] = [];
 
     for (const country of mapped.countries) {
@@ -351,7 +399,7 @@ async function syncRelations(movieId: string, mapped: MappedMovie): Promise<void
     await models.MovieCountry.setCountries(movieId, countryIds);
   }
 
-  if (mapped.actor && mapped.actor.length > 0) {
+  if (mapped.actor && mapped.actor.length > 0 && isWritten('actor')) {
     const actorRecords: Array<Record<string, unknown>> = [];
 
     for (const [index, name] of mapped.actor.entries()) {
@@ -369,7 +417,7 @@ async function syncRelations(movieId: string, mapped: MappedMovie): Promise<void
     await models.MovieActor.setActors(movieId, actorRecords);
   }
 
-  if (mapped.director && mapped.director.length > 0) {
+  if (mapped.director && mapped.director.length > 0 && isWritten('director')) {
     const directorRecords: Array<Record<string, unknown>> = [];
 
     for (const [index, name] of mapped.director.entries()) {
@@ -389,7 +437,7 @@ async function syncRelations(movieId: string, mapped: MappedMovie): Promise<void
 
   // The quality of a movie is stored in the `Format` master data and linked
   // through the `movieformats` junction collection.
-  if (mapped.quality) {
+  if (mapped.quality && isWritten('quality')) {
     const format = await models.Format.findOrCreate({
       name: mapped.quality,
       slug: slugify(mapped.quality),
@@ -402,7 +450,7 @@ async function syncRelations(movieId: string, mapped: MappedMovie): Promise<void
 
   // The release year is stored in the `Year` master data and linked through
   // the `movieyears` junction collection.
-  if (mapped.year) {
+  if (mapped.year && isWritten('year')) {
     const year = await models.Year.findOrCreate(mapped.year);
 
     if (year?._id) {
@@ -425,6 +473,7 @@ export function buildLogEntry(
   fileName: string,
   mapped: MappedMovie,
   outcome: ImportOutcome,
+  dryRun = false,
 ): ImportLogEntry {
   return {
     fileId,
@@ -435,6 +484,7 @@ export function buildLogEntry(
     operation: outcome.operation,
     updatedFields: outcome.updatedFields,
     status: outcome.error ? ImportStatus.FAILED : ImportStatus.SUCCESS,
+    imported: !dryRun && !outcome.error,
     error: outcome.error,
     timestamp: new Date().toISOString(),
   };

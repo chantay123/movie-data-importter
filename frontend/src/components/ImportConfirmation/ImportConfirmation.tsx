@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { importFile } from '../../services/importerApi.service';
 import type { FileProgress, ImportLogEntry, JobCounters } from '../../types/api.types';
-import { MatchStatus } from '../../types/movieImport.types';
+import { MatchStatus, SkipReason } from '../../types/movieImport.types';
 
 /**
  * Props of the {@link ImportConfirmation} component.
@@ -48,6 +48,18 @@ export function ImportConfirmation(props: ImportConfirmationProps): JSX.Element 
       return false;
     }
 
+    // A file that was already written to MongoDB must not be imported twice
+    // in the same session.
+    if (file.status === 'SUCCESS') {
+      return false;
+    }
+
+    // A file that was skipped because the movie already exists and brings no
+    // change is never written: it is not part of the import batch.
+    if (file.status === 'SKIPPED') {
+      return false;
+    }
+
     if (file.matchStatus === MatchStatus.AMBIGUOUS && !props.targetMovieId) {
       return false;
     }
@@ -57,6 +69,14 @@ export function ImportConfirmation(props: ImportConfirmationProps): JSX.Element 
 
   const creates = importable.filter((file) => file.matchStatus === MatchStatus.NEW).length;
   const updates = importable.filter((file) => file.matchStatus === MatchStatus.MATCHED).length;
+
+  /** Files that were parsed but not written yet. */
+  const pending = props.files.filter((file) => file.status === 'PARSED').length;
+
+  /** Files that were skipped because the movie already exists. */
+  const unchanged = props.files.filter(
+    (file) => file.status === 'SKIPPED' && file.skipReason === SkipReason.ALREADY_EXISTS,
+  ).length;
 
   /**
    * Imports every eligible file, one after the other.
@@ -86,9 +106,16 @@ export function ImportConfirmation(props: ImportConfirmationProps): JSX.Element 
     }
 
     setIsImporting(false);
-    setMessage(
-      `${dryRun ? 'Dry-run' : 'Import'} hoàn tất: ${succeeded} thành công, ${failed} thất bại.`,
-    );
+
+    if (dryRun) {
+      setMessage(
+        `Chỉ xem trước: ${succeeded} phim đã được kiểm tra, ${failed} lỗi. ` +
+          'Chưa có gì được ghi vào MongoDB — bỏ chọn "Chế độ preview" để import thật.',
+      );
+    } else {
+      setMessage(`Import hoàn tất: ${succeeded} phim đã ghi vào MongoDB, ${failed} thất bại.`);
+    }
+
     props.onImported();
   };
 
@@ -128,6 +155,21 @@ export function ImportConfirmation(props: ImportConfirmationProps): JSX.Element 
       {message ? <div className="alert alert--info">{message}</div> : null}
       {error ? <div className="alert alert--error">{error}</div> : null}
 
+      {pending > 0 ? (
+        <div className="alert alert--warning">
+          {pending} phim đã được phân tích và đối chiếu với MongoDB nhưng{' '}
+          <strong>chưa được ghi vào database</strong>. Bỏ chọn ô &ldquo;Chế độ preview&rdquo; rồi
+          bấm &ldquo;Xác nhận import&rdquo; để ghi thật.
+        </div>
+      ) : null}
+
+      {unchanged > 0 ? (
+        <div className="alert alert--info">
+          {unchanged} phim <strong>đã có trong database</strong> và file không mang thay đổi nào
+          mới: các phim này được đánh dấu &ldquo;đã có&rdquo; và bỏ qua, không ghi gì vào MongoDB.
+        </div>
+      ) : null}
+
       <div className="stats">
         <div className="stat">
           <div className="stat__label">Sắp import</div>
@@ -141,10 +183,14 @@ export function ImportConfirmation(props: ImportConfirmationProps): JSX.Element 
           <div className="stat__label">Cập nhật</div>
           <div className="stat__value">{updates}</div>
         </div>
+        <div className="stat stat--info">
+          <div className="stat__label">Đã có (bỏ qua)</div>
+          <div className="stat__value">{unchanged}</div>
+        </div>
         <div className="stat stat--warning">
           <div className="stat__label">Bỏ qua</div>
           <div className="stat__value">
-            {(props.counters?.skipped ?? 0) + (props.counters?.cancelled ?? 0)}
+            {(props.counters?.skipped ?? 0) - unchanged + (props.counters?.cancelled ?? 0)}
           </div>
         </div>
         <div className="stat stat--danger">
@@ -182,7 +228,15 @@ export function ImportConfirmation(props: ImportConfirmationProps): JSX.Element 
                   </td>
                   <td className="muted">{log.updatedFields.join(', ') || '-'}</td>
                   <td>
-                    <span className={`badge badge--${log.status}`}>{log.status}</span>
+                    {log.imported === true ? (
+                      <span className="badge badge--SUCCESS">Đã ghi DB</span>
+                    ) : log.skipped === true ? (
+                      <span className="badge badge--UNCHANGED">Đã có — bỏ qua</span>
+                    ) : log.status === 'FAILED' ? (
+                      <span className="badge badge--FAILED">Lỗi</span>
+                    ) : (
+                      <span className="badge badge--PARSED">Chỉ xem trước</span>
+                    )}
                   </td>
                   <td className="diff-old">{log.error ?? ''}</td>
                 </tr>

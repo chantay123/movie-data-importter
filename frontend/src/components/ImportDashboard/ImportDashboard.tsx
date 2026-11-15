@@ -60,8 +60,12 @@ export function ImportDashboard(props: ImportDashboardProps): JSX.Element {
               <div className="stat__value">{counters.processed}</div>
             </div>
             <div className="stat stat--success">
-              <div className="stat__label">Thành công</div>
+              <div className="stat__label">Đã ghi vào DB</div>
               <div className="stat__value">{counters.success}</div>
+            </div>
+            <div className="stat stat--warning">
+              <div className="stat__label">Đã đối chiếu, chờ import</div>
+              <div className="stat__value">{counters.parsed ?? 0}</div>
             </div>
             <div className="stat stat--danger">
               <div className="stat__label">Thất bại</div>
@@ -72,8 +76,12 @@ export function ImportDashboard(props: ImportDashboardProps): JSX.Element {
               <div className="stat__value">{counters.needsReview}</div>
             </div>
             <div className="stat stat--success">
-              <div className="stat__label">Đã import DB</div>
+              <div className="stat__label">Số lần ghi DB</div>
               <div className="stat__value">{counters.imported}</div>
+            </div>
+            <div className="stat stat--info">
+              <div className="stat__label">Đã có, không đổi (bỏ qua)</div>
+              <div className="stat__value">{counters.unchanged ?? 0}</div>
             </div>
             <div className="stat">
               <div className="stat__label">Đang xử lý</div>

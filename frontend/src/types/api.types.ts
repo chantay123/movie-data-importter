@@ -5,6 +5,7 @@ import {
   MatchStatus,
   MergeStrategy,
   ProcessingStage,
+  SkipReason,
 } from './movieImport.types';
 
 /**
@@ -79,6 +80,7 @@ export interface ParsedMovie {
 export interface FileProgress {
   id: string;
   fileName: string;
+  filePath?: string;
   fileSize: number;
   status: ImportStatus;
   stage: ProcessingStage;
@@ -90,9 +92,16 @@ export interface FileProgress {
   sourceFormat?: string;
   matchStatus?: MatchStatus;
   existingMovieId?: string;
+  imported?: boolean;
   startedAt?: string;
   finishedAt?: string;
   error?: string;
+  /** Reason why the file was skipped, when its status is `SKIPPED`. */
+  skipReason?: SkipReason;
+  /** Whether the movie already existed in MongoDB. */
+  alreadyExists?: boolean;
+  /** Names of the fields that differ between the database and the file. */
+  changedFields?: string[];
   parsed?: ParsedMovie;
 }
 
@@ -108,7 +117,10 @@ export interface JobCounters {
   skipped: number;
   cancelled: number;
   processing: number;
+  parsed: number;
   imported: number;
+  /** Files skipped because the movie already exists and brings no change. */
+  unchanged: number;
   overallProgress: number;
 }
 
@@ -124,6 +136,9 @@ export interface ImportLogEntry {
   operation: ImportOperation;
   updatedFields: string[];
   status: ImportStatus;
+  imported?: boolean;
+  /** Whether the file was skipped because the movie already existed. */
+  skipped?: boolean;
   error?: string;
   timestamp: string;
 }
@@ -165,4 +180,8 @@ export interface MovieComparison {
   candidates: ExistingMovie[];
   diffs: FieldDiff[];
   updatableFields: string[];
+  /** Whether the file brings at least one change compared to the database. */
+  hasChanges: boolean;
+  /** Names of the fields that actually differ. */
+  changedFields: string[];
 }

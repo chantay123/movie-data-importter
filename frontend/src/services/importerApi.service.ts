@@ -31,6 +31,13 @@ const API_KEY: string = import.meta.env['VITE_IMPORTER_API_KEY']?.trim() ?? '';
 export interface SelectedFile {
   /** Name of the file. */
   name: string;
+  /**
+   * Path of the file relative to the selected folder.
+   *
+   * It is the only reliable identifier of a file inside a folder: two files
+   * living in different sub-folders can share the same name.
+   */
+  path: string;
   /** Size of the file in bytes. */
   size: number;
   /** Raw content of the file. */
@@ -101,6 +108,7 @@ export async function createImportJob(files: SelectedFile[]): Promise<string> {
     body: JSON.stringify({
       files: files.map((file) => ({
         name: file.name,
+        path: file.path,
         size: file.size,
         content: file.content,
       })),

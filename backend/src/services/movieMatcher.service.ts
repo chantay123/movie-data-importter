@@ -1,5 +1,5 @@
 import { MatchStatus } from '../constants/importStatus';
-import { getMovieModel } from '../database/crawlerModels';
+import { getMovieModel, getModels } from '../database/crawlerModels';
 import { isDatabaseReady } from '../database/mongo-client';
 import type {
   ExistingMovie,
@@ -133,6 +133,61 @@ function toExistingMovie(document: Record<string, unknown>): ExistingMovie {
 }
 
 /**
+ * Loads the normalized relations of a movie.
+ *
+ * The categories, the countries, the format and the year do not live on the
+ * `Movie` document: they are stored in the junction collections of the
+ * crawler. They are loaded here so that the comparison can tell whether the
+ * incoming file brings a change for them.
+ *
+ * A failure to read the relations never stops the lookup: the movie is then
+ * compared without them.
+ *
+ * @param movieId - Identifier of the movie document.
+ * @returns The relations of the movie.
+ */
+async function loadRelations(movieId: string): Promise<{
+  categories: Array<{ name: string; slug: string }>;
+  countries: Array<{ name: string; slug: string }>;
+  quality?: string;
+  year?: number;
+  relationsLoaded: boolean;
+}> {
+  const empty = { categories: [], countries: [], relationsLoaded: false };
+
+  try {
+    const models = getModels();
+
+    const [categories, countries, formats, year] = await Promise.all([
+      models.MovieCategory.getCategoriesForMovie(movieId) as Promise<
+        Array<{ name?: string; slug?: string }>
+      >,
+      models.MovieCountry.getCountriesForMovie(movieId) as Promise<
+        Array<{ name?: string; slug?: string }>
+      >,
+      models.MovieFormat.getFormatsForMovie(movieId) as Promise<Array<{ name?: string }>>,
+      models.MovieYear.getYearForMovie(movieId) as Promise<{ name?: string } | null>,
+    ]);
+
+    const quality = formats?.[0]?.name;
+
+    return {
+      categories: (categories ?? [])
+        .filter((entry) => Boolean(entry?.name))
+        .map((entry) => ({ name: entry.name as string, slug: entry.slug ?? '' })),
+      countries: (countries ?? [])
+        .filter((entry) => Boolean(entry?.name))
+        .map((entry) => ({ name: entry.name as string, slug: entry.slug ?? '' })),
+      ...(quality ? { quality } : {}),
+      ...(year?.name ? { year: Number.parseInt(year.name, 10) } : {}),
+      relationsLoaded: true,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
  * Runs a MongoDB query and converts the documents.
  *
  * @param query - The MongoDB filter.
@@ -150,7 +205,14 @@ async function runQuery(query: Record<string, unknown>): Promise<ExistingMovie[]
     Record<string, unknown>
   >;
 
-  return documents.map(toExistingMovie);
+  return Promise.all(
+    documents.map(async (document) => {
+      const movie = toExistingMovie(document);
+      const relations = await loadRelations(movie._id);
+
+      return { ...movie, ...relations };
+    }),
+  );
 }
 
 /**
